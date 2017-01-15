@@ -1,0 +1,126 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Bjoern"
+date: "January 15, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(caret)
+library(ggplot2)
+library(knitr)
+```
+
+## Overview & Objective
+The goal was to predict whether a person is performing  barbell lifts correctly or incorrectly (in 5 different ways). Data from accelerometers on the belt, forearm, arm, and dumbell from 6 study participants were available, who performed barbell lifts under supervision either correctly or in one out of 5 incorrect ways. In the training data, the "classe" variable indicates the exercise quality type. More information on these data is available at http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The task was to build a prediction/classification model, create a report how the model was built, how cross validation was used, and what the expected out of sample error is. Finally, the model was used to predict 20 different test cases.
+
+## Reading data sets
+First the training and testing data was read in and a first overview was generated.
+
+```{r reading_data}
+training = read.csv("pml-training.csv")
+training[training==""]=NA
+testing = read.csv("pml-testing.csv")
+```
+The training data set has `r nrow(training)` entries and the testing set has `r nrow(testing)` entries.
+
+First, we look at the summary of the training set:
+```{r echo=FALSE}
+summary(training)
+```
+
+Note, that several predicators are mostly NA (i.e., missing values). Thus, we calculate the NA ratios:
+```{r na_ratio}
+na_ratio = apply(training,2,function(x) sum(is.na(x))/length(x))
+```
+
+```{r na_ratio_hist, fig.cap="Figure. Histogram of NA ratio."}
+dat = data.frame(na_ratio = na_ratio)
+p = ggplot(aes(x = na_ratio), data = dat)
+p = p + geom_histogram()
+p = p + theme_bw()
+print(p)
+```
+
+We only keep the predictors with an na_ratio<0.1.
+```{r filtering_data}
+tokeep = colnames(training)[na_ratio < 0.1]
+training = training[,colnames(training) %in% tokeep]
+training = training
+testing = testing[,colnames(testing) %in% tokeep]
+```
+
+## Partition data for for estimation of the out of sample error
+We partion the testing data 3/4 to 1/4 into the training and testing data sets used for fitting and evaluation of the random forrest classification model (estimation of out of sample errors).
+
+```{r data_partition}
+set.seed(325)
+inTrain = createDataPartition(training$classe, p = 3/4)[[1]]
+dat_train = training[ inTrain,]
+dat_test = training[-inTrain,]
+```
+
+The first seven columns of the data (`r paste(colnames(dat_train)[1:7], collapse=",")`) are meta information and are not considered in the classification models.
+```{r}
+dat_train = dat_train[,-c(1:7)]
+```
+
+## Train and evaluate classification models
+Three different classification models were trained using 10-fold cross-validation for (tuning) parameter selection: a random forest model (rf), a boosted tree model (gbm), and a linear discriminant analysis model (lda): 
+
+```{r fit_model, cache=TRUE, results=FALSE}
+set.seed(343)
+train_control <- trainControl(method="cv", number=10)
+fit.rf = train(classe~.,data = dat_train, trControl = train_control, method = "rf")
+fit.gbm = train(classe~.,data = dat_train, trControl = train_control, method = "gbm")
+fit.lda = train(classe~.,data = dat_train, trControl = train_control, method = "lda")
+```
+
+Based on the cross-validation results (i.e., largest estimated accuracy), the following tuning parameters were selected for the three models: mtry = 2 for the random forrest model; n.trees = 150, interaction.depth = 3, shrinkage = 0.1, and n.minobsinnode = 10 for the boosted tree model (gbm); and no tunining parameter had to be selected for the lda model.
+
+To estimate the out of sample error, each model was used to predict the "classe" for the testing set (from the data set partition):
+```{r predict, cache=TRUE}
+pred.rf = predict(fit.rf, newdata = dat_test)
+cm.rf = confusionMatrix(pred.rf, dat_test$classe) 
+print(cm.rf)
+pred.gbm = predict(fit.gbm, newdata = dat_test)
+cm.gbm = confusionMatrix(pred.gbm, dat_test$classe) 
+print(cm.gbm)
+pred.lda = predict(fit.lda, newdata = dat_test)
+cm.lda = confusionMatrix(pred.lda, dat_test$classe) 
+print(cm.lda)
+```
+Based on these predictions, the estimated out of sample accuracy is `r cm.rf$overall["Accuracy"]` for random forest, `r cm.gbm$overall["Accuracy"]` for gbm, and `r cm.lda$overall["Accuracy"]` for the lda model.
+
+The RF and GBM model show comparable good performance, the performance of the LDA model is worse. Thus, we exclude the LDA model in the subsequent steps.
+
+## Apply model to predict testing set
+We use the GBM and the RF models to predict the "classe" for the provided testing data, and compare the prediction results using a confusion table.
+```{r apply_model}
+pred.gbm2 = predict(fit.gbm, newdata = testing)
+pred.rf2 = predict(fit.rf, newdata = testing)
+confusionMatrix(as.character(pred.rf2),as.character(pred.gbm2))
+pred_res_table = data.frame(testing[,1:6], RF_Prediction = as.character(pred.rf2), GBM_Prediction=as.character(pred.gbm2))
+pred_res_table$SAME_PREDICTION = pred_res_table$RF_Prediction == pred_res_table$GBM_Prediction
+```
+
+The predictions from both models are in perfect agreement, which increases the confidence in the predictions, and means that further aggregation of the modeling results is not required.
+
+```{r result_table, echo = FALSE}
+kable(pred_res_table)
+```
+
+## Summary
+* We can summarize the results as follows:
+  + A random forrest and boosted tree model could successfully be used to predict the class for this workout training
+    - Out of sample accuracy for random forrest model: `r cm.rf$overall["Accuracy"]`
+    - Out of sample accuracy for boosted model: `r cm.gbm$overall["Accuracy"]`
+  + The expected out of sample error is 1 - Accuracy:
+    - Out of sample error for random forrest model: `r 1-cm.rf$overall["Accuracy"]`
+    - Out of sample error for boosted model: `r 1-cm.gbm$overall["Accuracy"]`
+  + Cross-validation was used for model parameter tuning
+  + The random forrest and boosted tree models agreed on the predicted classes for the 20 different test cases (see provided table)
+  
